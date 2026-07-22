@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: saifi-saidi-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install && npx prisma generate --schema=backend/prisma/schema.prisma && npm run build --workspace backend
+    startCommand: npx prisma migrate deploy --schema=backend/prisma/schema.prisma && npm run start --workspace backend
+    envVars:
+      - key: DATABASE_URL
+        sync: false # paste your Neon/Supabase connection string in the Render dashboard
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        sync: false # e.g. https://your-app.vercel.app (comma-separate multiple origins)
+      - key: SEED_ADMIN_EMAIL
+        sync: false
+      - key: SEED_ADMIN_PASSWORD
+        sync: false

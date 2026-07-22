@@ -1,0 +1,140 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  ENGINEER
+  VIEWER
+}
+
+enum BatchStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum TargetCategory {
+  GENERAL              // ทั่วไป
+  INDUSTRIAL_ESTATE     // นิคมอุตสาหกรรม
+  CITY_MUNICIPALITY     // เทศบาลนคร
+  WORST4                 // 4 กฟฟ. ยอดแย่
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(VIEWER)
+  createdAt    DateTime @default(now())
+
+  uploadBatches  UploadBatch[] @relation("UploadedBy")
+  reviewedBatches UploadBatch[] @relation("ReviewedBy")
+  targets        Target[]
+}
+
+model Office {
+  id       String  @id @default(cuid())
+  code     String  @unique // e.g. "กฟอ.แก้งคร้อ"
+  region   String? // e.g. "การไฟฟ้าเขต3(นครราชสีมา) ภาค 2"
+  category TargetCategory @default(GENERAL)
+
+  feeders Feeder[]
+}
+
+model Feeder {
+  id       String  @id @default(cuid())
+  code     String  @unique // e.g. "CYA07"
+  officeId String?
+  office   Office? @relation(fields: [officeId], references: [id])
+}
+
+model UploadBatch {
+  id             String      @id @default(cuid())
+  fileName       String
+  uploadedById   String
+  uploadedBy     User        @relation("UploadedBy", fields: [uploadedById], references: [id])
+  uploadedAt     DateTime    @default(now())
+
+  // metadata parsed from the report header block
+  region         String?
+  officesText    String?
+  periodStart    DateTime?
+  periodEnd      DateTime?
+
+  // figures embedded in the "ประเมิน" / "ไม่ประเมิน" sheets, kept for cross-check
+  fileSaifiEvaluated    Float?
+  fileSaidiEvaluated    Float?
+  fileSaifiNotEvaluated Float?
+  fileSaidiNotEvaluated Float?
+  totalCustomers        Int?
+
+  status         BatchStatus @default(PENDING_REVIEW)
+  anomalyCount   Int         @default(0)
+  reviewedById   String?
+  reviewedBy     User?       @relation("ReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt     DateTime?
+  notes          String?
+
+  events OutageEvent[]
+
+  @@index([status])
+}
+
+model OutageEvent {
+  id             String   @id @default(cuid())
+  uploadBatchId  String
+  uploadBatch    UploadBatch @relation(fields: [uploadBatchId], references: [id], onDelete: Cascade)
+
+  eventNo           BigInt
+  sequenceNo        Int?
+  outageAt          DateTime
+  restoreFirstAt    DateTime?
+  restoreFullAt     DateTime?
+  durationMinutes   Int?
+  equipmentCode     String?
+  feederCode        String?
+  status            String?
+  phase             String?
+  subCause          String?
+  causeKnown        String?
+  officeName        String?
+  weather           String?
+  customersAffected Int?
+  location          String?
+  repairDetail      String?
+  loadMw            Float?
+  eventType         String?
+  customerMinutes   Int?     // ผชฟ.*เวลา, precomputed in the source file
+  evaluated         Boolean? // true = counted in SAIFI/SAIDI ("ประเมิน"), false = excluded ("ไม่ประเมิน"), null = not found in either sheet (anomaly)
+
+  anomalyFlags      Json?    // list of anomaly codes detected on import, e.g. ["NEGATIVE_DURATION"]
+
+  createdAt DateTime @default(now())
+
+  @@index([uploadBatchId])
+  @@index([feederCode])
+  @@index([officeName])
+  @@index([outageAt])
+  @@index([evaluated])
+}
+
+model Target {
+  id          String         @id @default(cuid())
+  year        Int
+  category    TargetCategory
+  saifiTarget Float
+  saidiTarget Float
+  maifiTarget Float?
+  createdById String?
+  createdBy   User?          @relation(fields: [createdById], references: [id])
+  createdAt   DateTime       @default(now())
+
+  @@unique([year, category])
+}
