@@ -5,8 +5,11 @@ import { TrendChart, type TrendPoint } from "../components/charts/TrendChart";
 import { CauseBreakdown, type CausePoint } from "../components/charts/CauseBreakdown";
 import { AreaBreakdown, type AreaPoint } from "../components/charts/AreaBreakdown";
 import { WorstFeeders, type FeederPoint } from "../components/charts/WorstFeeders";
+import { CumulativeTrendChart, type CumulativePoint } from "../components/charts/CumulativeTrendChart";
+import { ForecastPanel } from "../components/ForecastPanel";
 
 interface Summary {
+  batchId: string;
   fileName: string;
   periodStart: string | null;
   periodEnd: string | null;
@@ -22,6 +25,7 @@ interface Summary {
 export function Dashboard() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [trend, setTrend] = useState<TrendPoint[]>([]);
+  const [cumulativeTrend, setCumulativeTrend] = useState<CumulativePoint[]>([]);
   const [causes, setCauses] = useState<CausePoint[]>([]);
   const [areas, setAreas] = useState<AreaPoint[]>([]);
   const [worstFeeders, setWorstFeeders] = useState<FeederPoint[]>([]);
@@ -31,15 +35,17 @@ export function Dashboard() {
   useEffect(() => {
     (async () => {
       try {
-        const [s, t, c, a, w] = await Promise.all([
+        const [s, t, ct, c, a, w] = await Promise.all([
           apiClient.get("/dashboard/summary"),
           apiClient.get("/dashboard/trend"),
+          apiClient.get("/dashboard/cumulative-trend"),
           apiClient.get("/dashboard/causes"),
           apiClient.get("/dashboard/areas"),
           apiClient.get("/dashboard/worst-feeders"),
         ]);
         setSummary(s.data);
         setTrend(t.data);
+        setCumulativeTrend(ct.data);
         setCauses(c.data);
         setAreas(a.data);
         setWorstFeeders(w.data);
@@ -99,6 +105,13 @@ export function Dashboard() {
         <h2 className="mb-4 text-lg font-semibold text-slate-800">แนวโน้มรายเดือน (Trend Analysis)</h2>
         <TrendChart data={trend} />
       </div>
+
+      <div className="rounded-lg border bg-white p-6 shadow-sm">
+        <h2 className="mb-4 text-lg font-semibold text-slate-800">สะสมเทียบเป้าหมายรายเดือน</h2>
+        <CumulativeTrendChart data={cumulativeTrend} />
+      </div>
+
+      <ForecastPanel batchId={summary.batchId} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div className="rounded-lg border bg-white p-6 shadow-sm">

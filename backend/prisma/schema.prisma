@@ -37,6 +37,7 @@ model User {
   uploadBatches  UploadBatch[] @relation("UploadedBy")
   reviewedBatches UploadBatch[] @relation("ReviewedBy")
   targets        Target[]
+  monthlyTargets MonthlyTarget[]
 }
 
 model Office {
@@ -137,4 +138,21 @@ model Target {
   createdAt   DateTime       @default(now())
 
   @@unique([year, category])
+}
+
+// Cumulative-to-date target for a given month, e.g. "by end of Feb, cumulative
+// SAIFI should be <= 0.4" - lets the dashboard show whether YTD performance is
+// on pace, not just whether the full-year figure is met.
+model MonthlyTarget {
+  id                    String         @id @default(cuid())
+  year                  Int
+  month                 Int // 1-12
+  category              TargetCategory
+  cumulativeSaifiTarget Float
+  cumulativeSaidiTarget Float
+  createdById           String?
+  createdBy             User?          @relation(fields: [createdById], references: [id])
+  createdAt             DateTime       @default(now())
+
+  @@unique([year, month, category])
 }

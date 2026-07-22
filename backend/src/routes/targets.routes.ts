@@ -45,3 +45,60 @@ targetsRouter.put("/", requireRole(Role.ADMIN), async (req, res) => {
 
   res.json({ ...target, year: ceToBe(target.year) });
 });
+
+targetsRouter.get("/monthly", async (req, res) => {
+  const year = beToCe(Number(req.query.year));
+  const category = (req.query.category as TargetCategory) ?? TargetCategory.GENERAL;
+  if (!Number.isFinite(year)) {
+    return res.status(400).json({ error: "year ไม่ถูกต้อง" });
+  }
+
+  const rows = await prisma.monthlyTarget.findMany({
+    where: { year, category },
+    orderBy: { month: "asc" },
+  });
+  res.json(rows.map((r) => ({ ...r, year: ceToBe(r.year) })));
+});
+
+const monthlyRowSchema = z.object({
+  month: z.number().int().min(1).max(12),
+  cumulativeSaifiTarget: z.number().nonnegative(),
+  cumulativeSaidiTarget: z.number().nonnegative(),
+});
+
+const bulkMonthlySchema = z.object({
+  year: z.number().int().min(2000).max(3000),
+  category: z.nativeEnum(TargetCategory),
+  rows: z.array(monthlyRowSchema).min(1).max(12),
+});
+
+targetsRouter.put("/monthly/bulk", requireRole(Role.ADMIN), async (req, res) => {
+  const parsed = bulkMonthlySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+  const { category, rows } = parsed.data;
+  const year = beToCe(parsed.data.year);
+
+  const saved = await prisma.$transaction(
+    rows.map((row) =>
+      prisma.monthlyTarget.upsert({
+        where: { year_month_category: { year, month: row.month, category } },
+        create: {
+          year,
+          month: row.month,
+          category,
+          cumulativeSaifiTarget: row.cumulativeSaifiTarget,
+          cumulativeSaidiTarget: row.cumulativeSaidiTarget,
+          createdById: req.user!.id,
+        },
+        update: {
+          cumulativeSaifiTarget: row.cumulativeSaifiTarget,
+          cumulativeSaidiTarget: row.cumulativeSaidiTarget,
+        },
+      })
+    )
+  );
+
+  res.json(saved.map((r) => ({ ...r, year: ceToBe(r.year) })));
+});
