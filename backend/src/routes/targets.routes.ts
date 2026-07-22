@@ -8,9 +8,17 @@ export const targetsRouter = Router();
 
 targetsRouter.use(requireAuth);
 
+// Target.year is stored as Gregorian, matching OutageEvent/UploadBatch dates
+// (see the BE-year comment in parser.service.ts), but the UI's "ปี (พ.ศ.)"
+// field is Buddhist Era, so it's converted at this API boundary in both
+// directions rather than asking the frontend to do date-system math.
+const BE_OFFSET = 543;
+const beToCe = (year: number) => (year > 2400 ? year - BE_OFFSET : year);
+const ceToBe = (year: number) => (year < 2400 ? year + BE_OFFSET : year);
+
 targetsRouter.get("/", async (_req, res) => {
   const targets = await prisma.target.findMany({ orderBy: [{ year: "desc" }, { category: "asc" }] });
-  res.json(targets);
+  res.json(targets.map((t) => ({ ...t, year: ceToBe(t.year) })));
 });
 
 const upsertSchema = z.object({
@@ -26,7 +34,8 @@ targetsRouter.put("/", requireRole(Role.ADMIN), async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
-  const { year, category, saifiTarget, saidiTarget, maifiTarget } = parsed.data;
+  const { category, saifiTarget, saidiTarget, maifiTarget } = parsed.data;
+  const year = beToCe(parsed.data.year);
 
   const target = await prisma.target.upsert({
     where: { year_category: { year, category } },
@@ -34,5 +43,5 @@ targetsRouter.put("/", requireRole(Role.ADMIN), async (req, res) => {
     update: { saifiTarget, saidiTarget, maifiTarget },
   });
 
-  res.json(target);
+  res.json({ ...target, year: ceToBe(target.year) });
 });

@@ -13,6 +13,14 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
+// multer/busboy decode multipart headers as latin1 regardless of the actual
+// charset, so a non-ASCII (e.g. Thai) filename comes through as mojibake.
+// Re-interpreting those latin1 code units as the original UTF-8 bytes
+// recovers the real filename.
+function fixMultipartFilename(name: string): string {
+  return Buffer.from(name, "latin1").toString("utf8");
+}
+
 uploadRouter.post(
   "/",
   requireAuth,
@@ -75,7 +83,7 @@ uploadRouter.post(
     const batch = await prisma.$transaction(async (tx) => {
       const created = await tx.uploadBatch.create({
         data: {
-          fileName: req.file!.originalname,
+          fileName: fixMultipartFilename(req.file!.originalname),
           uploadedById: req.user!.id,
           region: parsed.meta.region,
           officesText: parsed.meta.officesText,
