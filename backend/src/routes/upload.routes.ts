@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { parseReport50 } from "../services/parser.service.js";
 import { detectAnomalies } from "../services/anomaly.service.js";
+import { computeEvaluated } from "../services/evaluation.service.js";
 import { Prisma, Role } from "@prisma/client";
 
 export const uploadRouter = Router();
@@ -28,7 +29,7 @@ uploadRouter.post(
   upload.single("file"),
   async (req, res) => {
     if (!req.file) {
-      return res.status(400).json({ error: "กรุณาแนบไฟล์ 'รายงาน 50' (.xlsx)" });
+      return res.status(400).json({ error: "กรุณาแนบไฟล์ 'รายงาน 50' (.xlsx หรือ .xls)" });
     }
 
     let parsed;
@@ -46,13 +47,23 @@ uploadRouter.post(
     let anomalyCount = 0;
     const eventRows = parsed.events.map((event) => {
       const idKey = event.eventNo.toString();
-      const evaluated = parsed.evaluatedIds.has(idKey)
+      const sheetEvaluated = parsed.evaluatedIds.has(idKey)
         ? true
         : parsed.notEvaluatedIds.has(idKey)
           ? false
           : null;
-      const flags = detectAnomalies(event, evaluated);
+      // The ประเมิน/ไม่ประเมิน sheets (when present) are only a cross-check now -
+      // computeEvaluated() is the authoritative SAIFI/SAIDI counting rule,
+      // verified to reproduce those sheets exactly. See evaluation.service.ts.
+      const evaluated = computeEvaluated(event);
+      const flags = detectAnomalies(event, evaluated, sheetEvaluated);
       if (flags.length > 0) anomalyCount += 1;
+
+      const customerMinutes =
+        parsed.customerMinutesById.get(idKey) ??
+        (event.customersAffected !== undefined && event.durationMinutes !== undefined
+          ? event.customersAffected * event.durationMinutes
+          : undefined);
 
       return {
         eventNo: event.eventNo,
@@ -74,11 +85,28 @@ uploadRouter.post(
         repairDetail: event.repairDetail,
         loadMw: event.loadMw,
         eventType: event.eventType,
-        customerMinutes: parsed.customerMinutesById.get(idKey),
+        customerMinutes,
         evaluated,
         anomalyFlags: flags.length > 0 ? flags : Prisma.JsonNull,
       };
     });
+
+    // Some file formats (the raw HTML export) don't carry a total-customer
+    // count at all, unlike the xlsx export's embedded ผชฟ.ทั้งหมด figure.
+    // Carry forward the most recent batch's total as a stand-in - it moves
+    // slowly - rather than leaving SAIFI/SAIDI undivided (null).
+    let totalCustomers = parsed.evaluatedSummary?.totalCustomers ?? parsed.notEvaluatedSummary?.totalCustomers;
+    let totalCustomersSource: "file" | "carried_forward" | "none" = totalCustomers ? "file" : "none";
+    if (!totalCustomers) {
+      const lastBatch = await prisma.uploadBatch.findFirst({
+        where: { totalCustomers: { not: null } },
+        orderBy: { uploadedAt: "desc" },
+      });
+      if (lastBatch?.totalCustomers) {
+        totalCustomers = lastBatch.totalCustomers;
+        totalCustomersSource = "carried_forward";
+      }
+    }
 
     const batch = await prisma.$transaction(async (tx) => {
       const created = await tx.uploadBatch.create({
@@ -93,7 +121,7 @@ uploadRouter.post(
           fileSaidiEvaluated: parsed.evaluatedSummary?.saidi,
           fileSaifiNotEvaluated: parsed.notEvaluatedSummary?.saifi,
           fileSaidiNotEvaluated: parsed.notEvaluatedSummary?.saidi,
-          totalCustomers: parsed.evaluatedSummary?.totalCustomers ?? parsed.notEvaluatedSummary?.totalCustomers,
+          totalCustomers,
           anomalyCount,
         },
       });
@@ -112,6 +140,7 @@ uploadRouter.post(
       meta: parsed.meta,
       evaluatedSummary: parsed.evaluatedSummary,
       notEvaluatedSummary: parsed.notEvaluatedSummary,
+      totalCustomersSource,
     });
   }
 );

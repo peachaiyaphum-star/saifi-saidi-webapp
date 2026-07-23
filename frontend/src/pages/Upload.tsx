@@ -22,7 +22,7 @@ interface AnomalyEvent {
 }
 
 const ANOMALY_LABELS: Record<string, string> = {
-  UNCLASSIFIED: "ไม่พบในชีตประเมิน/ไม่ประเมิน",
+  SHEET_RULE_MISMATCH: "ผลคำนวณไม่ตรงกับชีตประเมิน/ไม่ประเมินในไฟล์",
   RESTORE_BEFORE_OUTAGE: "เวลาจ่ายไฟคืนก่อนเวลาไฟดับ",
   NEGATIVE_OR_ZERO_DURATION: "ระยะเวลาไฟดับผิดปกติ (<=0)",
   DURATION_MISMATCH: "ระยะเวลาไฟดับไม่ตรงกับเวลาที่คำนวณได้",
@@ -83,7 +83,7 @@ export function Upload() {
         <div className="flex items-center gap-3">
           <input
             type="file"
-            accept=".xlsx"
+            accept=".xlsx,.xls"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
             className="text-sm"
           />

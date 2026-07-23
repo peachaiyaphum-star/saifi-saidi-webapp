@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import * as cheerio from "cheerio";
 
 export interface ParsedHeaderMeta {
   region?: string;
@@ -114,9 +115,42 @@ function parseThaiDateTimeString(value: string): Date | undefined {
   );
 }
 
+// Date-only cell, used by the HTML-export format's "วันที่/เวลาไฟดับ" column
+// (that format keeps date and time in two separate plain-text columns rather
+// than one Excel datetime serial - see combineDateAndTimeSerials above for
+// the equivalent on the native xlsx format).
+function parseThaiDateOnly(value: string): Date | undefined {
+  const match = value.trim().match(/^(\d{1,2})\s+([฀-๿.]+)\s+(\d{4})$/);
+  if (!match) return undefined;
+  const [, dayStr, monthStr, yearStr] = match;
+  const month = THAI_MONTH_ABBR[monthStr];
+  if (month === undefined) return undefined;
+  return new Date(Date.UTC(beToCe(Number(yearStr)), month, Number(dayStr)));
+}
+
+function parseTimeOnlyString(value: string): { h: number; mi: number; s: number } | undefined {
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return undefined;
+  const [, hStr, mStr, sStr] = match;
+  return { h: Number(hStr), mi: Number(mStr), s: sStr ? Number(sStr) : 0 };
+}
+
+function combineThaiDateAndTimeStrings(dateStr: string, timeStr: string): Date | undefined {
+  const datePart = parseThaiDateOnly(dateStr);
+  if (!datePart) return undefined;
+  const timePart = parseTimeOnlyString(timeStr);
+  if (!timePart) return datePart;
+  const combined = new Date(datePart);
+  combined.setUTCHours(timePart.h, timePart.mi, timePart.s, 0);
+  return combined;
+}
+
 function cellToNumber(value: unknown): number | undefined {
   if (value === null || value === undefined || value === "") return undefined;
-  const n = Number(value);
+  // The HTML-export format renders numbers >= 1000 with thousands
+  // separators (e.g. "1,296"), which Number() would otherwise reject as NaN.
+  const cleaned = typeof value === "string" ? value.replace(/,/g, "") : value;
+  const n = Number(cleaned);
   return Number.isFinite(n) ? n : undefined;
 }
 
@@ -174,6 +208,12 @@ function readEventTable(rows: unknown[][]): ParsedEventRow[] {
       outageAt = combineDateAndTimeSerials(outageDateSerial, outageTimeSerial);
     } else if (typeof outageDateSerial === "number") {
       outageAt = excelDateSerialToUTCDate(outageDateSerial);
+    } else if (typeof outageDateSerial === "string") {
+      // HTML-export format: date and time are separate plain-text columns
+      outageAt =
+        typeof outageTimeSerial === "string"
+          ? combineThaiDateAndTimeStrings(outageDateSerial, outageTimeSerial)
+          : parseThaiDateOnly(outageDateSerial);
     }
     if (!outageAt) continue; // unusable row, skip rather than crash the whole import
 
@@ -240,12 +280,9 @@ function readIdsAndCustomerMinutes(rows: unknown[][]): { ids: Set<string>; minut
   return { ids, minutes };
 }
 
-function parseHeaderMeta(rows: unknown[][]): ParsedHeaderMeta {
+function parseHeaderMetaFromTexts(texts: string[]): ParsedHeaderMeta {
   const meta: ParsedHeaderMeta = {};
-  for (const row of rows.slice(0, 10)) {
-    const cell = cellToString(row?.[0]);
-    if (!cell) continue;
-
+  for (const cell of texts) {
     if (cell.startsWith("การไฟฟ้าเขต:")) {
       meta.region = cell.replace("การไฟฟ้าเขต:", "").trim();
     } else if (cell.startsWith("กฟฟ.:")) {
@@ -268,7 +305,15 @@ function parseHeaderMeta(rows: unknown[][]): ParsedHeaderMeta {
   return meta;
 }
 
-export function parseReport50(buffer: Buffer): ParseResult {
+function parseHeaderMeta(rows: unknown[][]): ParsedHeaderMeta {
+  const texts = rows
+    .slice(0, 10)
+    .map((row) => cellToString(row?.[0]))
+    .filter((c): c is string => c !== undefined);
+  return parseHeaderMetaFromTexts(texts);
+}
+
+function parseXlsxReport50(buffer: Buffer): ParseResult {
   // cellDates deliberately left off - see the comment on excelSerialToParts
   // for why native date/time cells are read as raw serials instead.
   const workbook = XLSX.read(buffer, { type: "buffer" });
@@ -306,4 +351,71 @@ export function parseReport50(buffer: Buffer): ParseResult {
   }
 
   return { meta, events, evaluatedIds, notEvaluatedIds, customerMinutesById, evaluatedSummary, notEvaluatedSummary };
+}
+
+// PEA's web reporting system's "export to Excel" button actually emits an
+// HTML <table> (SpreadsheetML-namespaced, UTF-8 with a BOM) saved with a
+// .xls extension - Excel opens these fine because it sniffs content over
+// trusting the extension, but they are not a real XLS/XLSX binary and
+// XLSX.read() silently mis-parses them as one column of garbled text. This
+// format also never carries the "ประเมิน"/"ไม่ประเมิน" sheets, since those
+// are themselves computed views built on top of a raw export like this one.
+function htmlTableToRows($: cheerio.CheerioAPI, table: any): unknown[][] {
+  const rows: unknown[][] = [];
+  table.find("tr").each((_: number, tr: any) => {
+    const cells: unknown[] = [];
+    $(tr)
+      .find("th,td")
+      .each((_: number, cell: any) => {
+        const text = $(cell).text().trim();
+        cells.push(text === "" ? null : text);
+      });
+    if (cells.length > 0) rows.push(cells);
+  });
+  return rows;
+}
+
+function parseHtmlReport50(buffer: Buffer): ParseResult {
+  const html = buffer.toString("utf8");
+  const $ = cheerio.load(html);
+
+  const headerTexts = $("#titleTable td")
+    .map((_, td) => $(td).text().trim())
+    .get()
+    .filter((t) => t !== "");
+  const meta = parseHeaderMetaFromTexts(headerTexts);
+
+  const reportTable = $("table")
+    .filter((_, table) => $(table).find("th").text().includes("หมายเลขเหตุการณ์"))
+    .first();
+  if (reportTable.length === 0) {
+    throw new Error('ไม่พบตารางข้อมูลเหตุการณ์ในไฟล์ - รูปแบบไฟล์อาจไม่ตรงกับ "รายงาน 50"');
+  }
+
+  const rows = htmlTableToRows($, reportTable);
+  const events = readEventTable(rows);
+
+  return {
+    meta,
+    events,
+    evaluatedIds: new Set(),
+    notEvaluatedIds: new Set(),
+    customerMinutesById: new Map(),
+  };
+}
+
+function looksLikeHtmlExport(buffer: Buffer): boolean {
+  const head = buffer.subarray(0, 8);
+  if (head[0] === 0x50 && head[1] === 0x4b) return false; // "PK\x03\x04" => zip container (.xlsx)
+  if (head[0] === 0xd0 && head[1] === 0xcf) return false; // OLE compound file => legacy binary .xls
+  const text = buffer
+    .subarray(0, 512)
+    .toString("utf8")
+    .replace(/^﻿/, "")
+    .trimStart();
+  return /^<html/i.test(text) || /^<\?xml/i.test(text);
+}
+
+export function parseReport50(buffer: Buffer): ParseResult {
+  return looksLikeHtmlExport(buffer) ? parseHtmlReport50(buffer) : parseXlsxReport50(buffer);
 }

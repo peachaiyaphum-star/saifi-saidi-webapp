@@ -1,7 +1,7 @@
 import type { ParsedEventRow } from "./parser.service.js";
 
 export type AnomalyCode =
-  | "UNCLASSIFIED" // event not found in either "ประเมิน" or "ไม่ประเมิน" sheet
+  | "SHEET_RULE_MISMATCH" // file's own ประเมิน/ไม่ประเมิน classification disagrees with the computed rule
   | "RESTORE_BEFORE_OUTAGE"
   | "NEGATIVE_OR_ZERO_DURATION"
   | "DURATION_MISMATCH"
@@ -11,11 +11,12 @@ const DURATION_MISMATCH_TOLERANCE_MINUTES = 5;
 
 export function detectAnomalies(
   event: ParsedEventRow,
-  evaluated: boolean | null
+  ruleEvaluated: boolean,
+  sheetEvaluated: boolean | null
 ): AnomalyCode[] {
   const flags: AnomalyCode[] = [];
 
-  if (evaluated === null) flags.push("UNCLASSIFIED");
+  if (sheetEvaluated !== null && sheetEvaluated !== ruleEvaluated) flags.push("SHEET_RULE_MISMATCH");
 
   if (event.restoreFullAt && event.restoreFullAt.getTime() < event.outageAt.getTime()) {
     flags.push("RESTORE_BEFORE_OUTAGE");
