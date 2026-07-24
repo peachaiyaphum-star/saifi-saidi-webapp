@@ -1,4 +1,17 @@
+import type { Prisma } from "@prisma/client";
 import type { ParsedEventRow } from "./parser.service.js";
+
+// A human review on the Analyze page (evaluatedOverride) always wins over the
+// computed rule (evaluated) below - shared by the dashboard aggregations and
+// the Analyze page's list/filter endpoint so "evaluated" means the same
+// thing everywhere.
+export const EVALUATED_TRUE_FILTER: Prisma.OutageEventWhereInput = {
+  OR: [{ evaluatedOverride: true }, { AND: [{ evaluatedOverride: null }, { evaluated: true }] }],
+};
+
+export const EVALUATED_FALSE_FILTER: Prisma.OutageEventWhereInput = {
+  OR: [{ evaluatedOverride: false }, { AND: [{ evaluatedOverride: null }, { evaluated: false }] }],
+};
 
 /**
  * PEA's SAIFI/SAIDI counting rule for "รายงาน 50" events, as specified by

@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { parseReport50 } from "../services/parser.service.js";
 import { detectAnomalies } from "../services/anomaly.service.js";
-import { computeEvaluated } from "../services/evaluation.service.js";
+import { computeEvaluated, EVALUATED_TRUE_FILTER, EVALUATED_FALSE_FILTER } from "../services/evaluation.service.js";
 import { Prisma, Role } from "@prisma/client";
 
 export const uploadRouter = Router();
@@ -186,5 +186,87 @@ uploadRouter.post(
     });
 
     res.json(batch);
+  }
+);
+
+// Analyze page: browse every imported event for a batch (not just anomalies),
+// filter by effective evaluated status, and page through it - a batch can
+// have several thousand events, so this never returns the full set at once.
+uploadRouter.get("/:id/events", requireAuth, async (req, res) => {
+  const batch = await prisma.uploadBatch.findUnique({ where: { id: req.params.id } });
+  if (!batch) return res.status(404).json({ error: "ไม่พบข้อมูลไฟล์นี้" });
+
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const pageSize = Math.min(200, Math.max(1, Number(req.query.pageSize) || 50));
+  const evaluatedFilter = typeof req.query.evaluatedFilter === "string" ? req.query.evaluatedFilter : "all";
+  const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+
+  const and: Prisma.OutageEventWhereInput[] = [{ uploadBatchId: batch.id }];
+  if (evaluatedFilter === "true") and.push(EVALUATED_TRUE_FILTER);
+  else if (evaluatedFilter === "false") and.push(EVALUATED_FALSE_FILTER);
+  else if (evaluatedFilter === "overridden") and.push({ evaluatedOverride: { not: null } });
+
+  if (search) {
+    const searchOr: Prisma.OutageEventWhereInput[] = [
+      { feederCode: { contains: search, mode: "insensitive" } },
+      { officeName: { contains: search, mode: "insensitive" } },
+      { subCause: { contains: search, mode: "insensitive" } },
+      { location: { contains: search, mode: "insensitive" } },
+    ];
+    if (/^\d+$/.test(search)) {
+      try {
+        searchOr.push({ eventNo: BigInt(search) });
+      } catch {
+        // ignore - too large to be a BigInt, just skip the exact-match branch
+      }
+    }
+    and.push({ OR: searchOr });
+  }
+
+  const where: Prisma.OutageEventWhereInput = { AND: and };
+
+  const [total, events] = await Promise.all([
+    prisma.outageEvent.count({ where }),
+    prisma.outageEvent.findMany({
+      where,
+      orderBy: [{ outageAt: "asc" }, { sequenceNo: "asc" }],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+  ]);
+
+  res.json({
+    page,
+    pageSize,
+    total,
+    events: events.map((e) => ({ ...e, effectiveEvaluated: e.evaluatedOverride ?? e.evaluated })),
+  });
+});
+
+uploadRouter.post(
+  "/:id/events/:eventId/override",
+  requireAuth,
+  requireRole(Role.ADMIN, Role.ENGINEER),
+  async (req, res) => {
+    const { evaluated } = req.body as { evaluated: boolean | null };
+    if (evaluated !== null && typeof evaluated !== "boolean") {
+      return res.status(400).json({ error: "evaluated ต้องเป็น true, false, หรือ null (ล้างค่า)" });
+    }
+
+    const event = await prisma.outageEvent.findFirst({
+      where: { id: req.params.eventId, uploadBatchId: req.params.id },
+    });
+    if (!event) return res.status(404).json({ error: "ไม่พบเหตุการณ์นี้ในไฟล์ที่ระบุ" });
+
+    const updated = await prisma.outageEvent.update({
+      where: { id: event.id },
+      data: {
+        evaluatedOverride: evaluated,
+        overriddenById: evaluated === null ? null : req.user!.id,
+        overriddenAt: evaluated === null ? null : new Date(),
+      },
+    });
+
+    res.json({ ...updated, effectiveEvaluated: updated.evaluatedOverride ?? updated.evaluated });
   }
 );

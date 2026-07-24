@@ -5,6 +5,7 @@ import { Login } from "./pages/Login";
 import { Upload } from "./pages/Upload";
 import { Dashboard } from "./pages/Dashboard";
 import { Targets } from "./pages/Targets";
+import { Analyze } from "./pages/Analyze";
 
 function NavBar() {
   const { user, logout } = useAuth();
@@ -25,6 +26,11 @@ function NavBar() {
         {(user.role === "ADMIN" || user.role === "ENGINEER") && (
           <NavLink to="/upload" className={linkClass}>
             อัปโหลดรายงาน 50
+          </NavLink>
+        )}
+        {(user.role === "ADMIN" || user.role === "ENGINEER") && (
+          <NavLink to="/analyze" className={linkClass}>
+            วิเคราะห์รายการที่นำเข้า
           </NavLink>
         )}
         {user.role === "ADMIN" && (
@@ -73,6 +79,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Targets />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/analyze"
+            element={
+              <ProtectedRoute>
+                <Analyze />
               </ProtectedRoute>
             }
           />

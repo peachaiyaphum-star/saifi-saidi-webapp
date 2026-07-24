@@ -38,6 +38,7 @@ model User {
   reviewedBatches UploadBatch[] @relation("ReviewedBy")
   targets        Target[]
   monthlyTargets MonthlyTarget[]
+  overriddenEvents OutageEvent[] @relation("OverriddenBy")
 }
 
 model Office {
@@ -112,8 +113,16 @@ model OutageEvent {
   repairDetail      String?
   loadMw            Float?
   eventType         String?
-  customerMinutes   Int?     // ผชฟ.*เวลา, precomputed in the source file
-  evaluated         Boolean? // true = counted in SAIFI/SAIDI ("ประเมิน"), false = excluded ("ไม่ประเมิน"), null = not found in either sheet (anomaly)
+  customerMinutes   Int?     // ผชฟ.*เวลา, precomputed in the source file or computed as customersAffected*durationMinutes
+  evaluated         Boolean  @default(false) // computed by the counting rule in evaluation.service.ts
+
+  // Manual review override (Analyze page): null = use the computed `evaluated`
+  // value above; true/false = a human explicitly overrode it. Kept separate
+  // from `evaluated` so the original rule result stays visible/auditable.
+  evaluatedOverride  Boolean?
+  overriddenById     String?
+  overriddenBy       User?     @relation("OverriddenBy", fields: [overriddenById], references: [id])
+  overriddenAt       DateTime?
 
   anomalyFlags      Json?    // list of anomaly codes detected on import, e.g. ["NEGATIVE_DURATION"]
 
@@ -124,6 +133,7 @@ model OutageEvent {
   @@index([officeName])
   @@index([outageAt])
   @@index([evaluated])
+  @@index([evaluatedOverride])
 }
 
 model Target {
