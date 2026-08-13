@@ -7,6 +7,14 @@ import { dashboardRouter } from "./routes/dashboard.routes.js";
 import { targetsRouter } from "./routes/targets.routes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
+// Last-resort safety net: Node terminates the whole process on an unhandled
+// rejection by default. Every route is wrapped with asyncHandler so this
+// shouldn't fire in practice, but if something outside Express's request
+// cycle ever rejects, log it instead of taking the entire API down.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection:", reason);
+});
+
 const app = express();
 
 // OutageEvent.eventNo is a BigInt (Prisma maps it that way for large PEA

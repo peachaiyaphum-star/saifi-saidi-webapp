@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { asyncHandler } from "../middleware/asyncHandler.js";
 import { Role, TargetCategory } from "@prisma/client";
 
 export const targetsRouter = Router();
@@ -16,10 +17,10 @@ const BE_OFFSET = 543;
 const beToCe = (year: number) => (year > 2400 ? year - BE_OFFSET : year);
 const ceToBe = (year: number) => (year < 2400 ? year + BE_OFFSET : year);
 
-targetsRouter.get("/", async (_req, res) => {
+targetsRouter.get("/", asyncHandler(async (_req, res) => {
   const targets = await prisma.target.findMany({ orderBy: [{ year: "desc" }, { category: "asc" }] });
   res.json(targets.map((t) => ({ ...t, year: ceToBe(t.year) })));
-});
+}));
 
 const upsertSchema = z.object({
   year: z.number().int().min(2000).max(3000),
@@ -29,7 +30,7 @@ const upsertSchema = z.object({
   maifiTarget: z.number().nonnegative().optional(),
 });
 
-targetsRouter.put("/", requireRole(Role.ADMIN), async (req, res) => {
+targetsRouter.put("/", requireRole(Role.ADMIN), asyncHandler(async (req, res) => {
   const parsed = upsertSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
@@ -44,9 +45,9 @@ targetsRouter.put("/", requireRole(Role.ADMIN), async (req, res) => {
   });
 
   res.json({ ...target, year: ceToBe(target.year) });
-});
+}));
 
-targetsRouter.get("/monthly", async (req, res) => {
+targetsRouter.get("/monthly", asyncHandler(async (req, res) => {
   const year = beToCe(Number(req.query.year));
   const category = (req.query.category as TargetCategory) ?? TargetCategory.GENERAL;
   if (!Number.isFinite(year)) {
@@ -58,7 +59,7 @@ targetsRouter.get("/monthly", async (req, res) => {
     orderBy: { month: "asc" },
   });
   res.json(rows.map((r) => ({ ...r, year: ceToBe(r.year) })));
-});
+}));
 
 const monthlyRowSchema = z.object({
   month: z.number().int().min(1).max(12),
@@ -72,7 +73,7 @@ const bulkMonthlySchema = z.object({
   rows: z.array(monthlyRowSchema).min(1).max(12),
 });
 
-targetsRouter.put("/monthly/bulk", requireRole(Role.ADMIN), async (req, res) => {
+targetsRouter.put("/monthly/bulk", requireRole(Role.ADMIN), asyncHandler(async (req, res) => {
   const parsed = bulkMonthlySchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
@@ -101,4 +102,4 @@ targetsRouter.put("/monthly/bulk", requireRole(Role.ADMIN), async (req, res) => 
   );
 
   res.json(saved.map((r) => ({ ...r, year: ceToBe(r.year) })));
-});
+}));

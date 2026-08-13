@@ -2,6 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { asyncHandler } from "../middleware/asyncHandler.js";
 import { parseReport50 } from "../services/parser.service.js";
 import { detectAnomalies } from "../services/anomaly.service.js";
 import { computeEvaluated, EVALUATED_TRUE_FILTER, EVALUATED_FALSE_FILTER } from "../services/evaluation.service.js";
@@ -27,7 +28,7 @@ uploadRouter.post(
   requireAuth,
   requireRole(Role.ADMIN, Role.ENGINEER),
   upload.single("file"),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: "กรุณาแนบไฟล์ 'รายงาน 50' (.xlsx หรือ .xls)" });
     }
@@ -108,30 +109,44 @@ uploadRouter.post(
       }
     }
 
-    const batch = await prisma.$transaction(async (tx) => {
-      const created = await tx.uploadBatch.create({
-        data: {
-          fileName: fixMultipartFilename(req.file!.originalname),
-          uploadedById: req.user!.id,
-          region: parsed.meta.region,
-          officesText: parsed.meta.officesText,
-          periodStart: parsed.meta.periodStart,
-          periodEnd: parsed.meta.periodEnd,
-          fileSaifiEvaluated: parsed.evaluatedSummary?.saifi,
-          fileSaidiEvaluated: parsed.evaluatedSummary?.saidi,
-          fileSaifiNotEvaluated: parsed.notEvaluatedSummary?.saifi,
-          fileSaidiNotEvaluated: parsed.notEvaluatedSummary?.saidi,
-          totalCustomers,
-          anomalyCount,
-        },
-      });
-
-      await tx.outageEvent.createMany({
-        data: eventRows.map((row) => ({ ...row, uploadBatchId: created.id })),
-      });
-
-      return created;
+    // A file can carry several thousand events; inserting them all can take
+    // longer than Prisma's interactive-transaction default (5s) over a
+    // pooled connection like Neon's, and that default is tight enough to
+    // matter here. Rather than tune that timeout, this isn't wrapped in an
+    // interactive transaction at all - createMany is already a single atomic
+    // statement, and on failure the batch row (with its cascade-deleted
+    // events, if any got inserted) is cleaned up explicitly below.
+    const batch = await prisma.uploadBatch.create({
+      data: {
+        fileName: fixMultipartFilename(req.file!.originalname),
+        uploadedById: req.user!.id,
+        region: parsed.meta.region,
+        officesText: parsed.meta.officesText,
+        periodStart: parsed.meta.periodStart,
+        periodEnd: parsed.meta.periodEnd,
+        fileSaifiEvaluated: parsed.evaluatedSummary?.saifi,
+        fileSaidiEvaluated: parsed.evaluatedSummary?.saidi,
+        fileSaifiNotEvaluated: parsed.notEvaluatedSummary?.saifi,
+        fileSaidiNotEvaluated: parsed.notEvaluatedSummary?.saidi,
+        totalCustomers,
+        anomalyCount,
+      },
     });
+
+    // Chunked rather than one createMany for the whole file: a single
+    // multi-thousand-row INSERT is slower and more failure-prone over a
+    // pooled connection than several smaller ones (this is what produced the
+    // multi-second query that originally blew Prisma's transaction timeout).
+    const CHUNK_SIZE = 500;
+    try {
+      const rowsWithBatchId = eventRows.map((row) => ({ ...row, uploadBatchId: batch.id }));
+      for (let i = 0; i < rowsWithBatchId.length; i += CHUNK_SIZE) {
+        await prisma.outageEvent.createMany({ data: rowsWithBatchId.slice(i, i + CHUNK_SIZE) });
+      }
+    } catch (err) {
+      await prisma.uploadBatch.delete({ where: { id: batch.id } });
+      throw err;
+    }
 
     res.status(201).json({
       batchId: batch.id,
@@ -142,18 +157,18 @@ uploadRouter.post(
       notEvaluatedSummary: parsed.notEvaluatedSummary,
       totalCustomersSource,
     });
-  }
+  })
 );
 
-uploadRouter.get("/", requireAuth, async (_req, res) => {
+uploadRouter.get("/", requireAuth, asyncHandler(async (_req, res) => {
   const batches = await prisma.uploadBatch.findMany({
     orderBy: { uploadedAt: "desc" },
     include: { uploadedBy: { select: { name: true, email: true } } },
   });
   res.json(batches);
-});
+}));
 
-uploadRouter.get("/:id", requireAuth, async (req, res) => {
+uploadRouter.get("/:id", requireAuth, asyncHandler(async (req, res) => {
   const batch = await prisma.uploadBatch.findUnique({
     where: { id: req.params.id },
     include: {
@@ -163,13 +178,13 @@ uploadRouter.get("/:id", requireAuth, async (req, res) => {
   });
   if (!batch) return res.status(404).json({ error: "ไม่พบข้อมูลไฟล์นี้" });
   res.json(batch);
-});
+}));
 
 uploadRouter.post(
   "/:id/review",
   requireAuth,
   requireRole(Role.ADMIN, Role.ENGINEER),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { decision, notes } = req.body as { decision: "APPROVED" | "REJECTED"; notes?: string };
     if (decision !== "APPROVED" && decision !== "REJECTED") {
       return res.status(400).json({ error: "decision ต้องเป็น APPROVED หรือ REJECTED" });
@@ -186,13 +201,13 @@ uploadRouter.post(
     });
 
     res.json(batch);
-  }
+  })
 );
 
 // Analyze page: browse every imported event for a batch (not just anomalies),
 // filter by effective evaluated status, and page through it - a batch can
 // have several thousand events, so this never returns the full set at once.
-uploadRouter.get("/:id/events", requireAuth, async (req, res) => {
+uploadRouter.get("/:id/events", requireAuth, asyncHandler(async (req, res) => {
   const batch = await prisma.uploadBatch.findUnique({ where: { id: req.params.id } });
   if (!batch) return res.status(404).json({ error: "ไม่พบข้อมูลไฟล์นี้" });
 
@@ -241,13 +256,13 @@ uploadRouter.get("/:id/events", requireAuth, async (req, res) => {
     total,
     events: events.map((e) => ({ ...e, effectiveEvaluated: e.evaluatedOverride ?? e.evaluated })),
   });
-});
+}));
 
 uploadRouter.post(
   "/:id/events/:eventId/override",
   requireAuth,
   requireRole(Role.ADMIN, Role.ENGINEER),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { evaluated } = req.body as { evaluated: boolean | null };
     if (evaluated !== null && typeof evaluated !== "boolean") {
       return res.status(400).json({ error: "evaluated ต้องเป็น true, false, หรือ null (ล้างค่า)" });
@@ -268,5 +283,5 @@ uploadRouter.post(
     });
 
     res.json({ ...updated, effectiveEvaluated: updated.evaluatedOverride ?? updated.evaluated });
-  }
+  })
 );
