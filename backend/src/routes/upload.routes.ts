@@ -180,6 +180,28 @@ uploadRouter.get("/:id", requireAuth, asyncHandler(async (req, res) => {
   res.json(batch);
 }));
 
+// Some file formats (the raw HTML export) don't carry a total-customer count
+// at all - upload falls back to carrying forward the last known value, but
+// there may be none yet (first-ever upload) or it may need correcting.
+uploadRouter.patch(
+  "/:id/total-customers",
+  requireAuth,
+  requireRole(Role.ADMIN, Role.ENGINEER),
+  asyncHandler(async (req, res) => {
+    const { totalCustomers } = req.body as { totalCustomers: number };
+    if (typeof totalCustomers !== "number" || !Number.isFinite(totalCustomers) || totalCustomers <= 0) {
+      return res.status(400).json({ error: "totalCustomers ต้องเป็นตัวเลขมากกว่า 0" });
+    }
+
+    const batch = await prisma.uploadBatch.update({
+      where: { id: req.params.id },
+      data: { totalCustomers: Math.round(totalCustomers) },
+    });
+
+    res.json(batch);
+  })
+);
+
 uploadRouter.post(
   "/:id/review",
   requireAuth,

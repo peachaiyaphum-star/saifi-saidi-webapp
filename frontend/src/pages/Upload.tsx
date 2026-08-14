@@ -9,6 +9,7 @@ interface BatchSummary {
   anomalyCount: number;
   fileSaifiEvaluated: number | null;
   fileSaidiEvaluated: number | null;
+  totalCustomers: number | null;
   uploadedBy: { name: string; email: string };
 }
 
@@ -36,6 +37,9 @@ export function Upload() {
   const [batches, setBatches] = useState<BatchSummary[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<string | null>(null);
   const [anomalies, setAnomalies] = useState<AnomalyEvent[]>([]);
+  const [editingTotalCustomersId, setEditingTotalCustomersId] = useState<string | null>(null);
+  const [totalCustomersInput, setTotalCustomersInput] = useState("");
+  const [savingTotalCustomers, setSavingTotalCustomers] = useState(false);
 
   async function loadBatches() {
     const { data } = await apiClient.get<BatchSummary[]>("/uploads");
@@ -76,6 +80,24 @@ export function Upload() {
     await loadBatches();
   }
 
+  function startEditTotalCustomers(b: BatchSummary) {
+    setEditingTotalCustomersId(b.id);
+    setTotalCustomersInput(b.totalCustomers ? String(b.totalCustomers) : "");
+  }
+
+  async function saveTotalCustomers(batchId: string) {
+    const value = Number(totalCustomersInput);
+    if (!Number.isFinite(value) || value <= 0) return;
+    setSavingTotalCustomers(true);
+    try {
+      await apiClient.patch(`/uploads/${batchId}/total-customers`, { totalCustomers: value });
+      setEditingTotalCustomersId(null);
+      await loadBatches();
+    } finally {
+      setSavingTotalCustomers(false);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <div className="rounded-lg border bg-white p-6 shadow-sm">
@@ -107,6 +129,7 @@ export function Upload() {
               <th className="pb-2">ผู้อัปโหลด</th>
               <th className="pb-2">สถานะ</th>
               <th className="pb-2">SAIFI / SAIDI (ในไฟล์)</th>
+              <th className="pb-2">ผู้ใช้ไฟทั้งหมด</th>
               <th className="pb-2">ข้อมูลผิดปกติ</th>
               <th className="pb-2">การดำเนินการ</th>
             </tr>
@@ -131,6 +154,36 @@ export function Upload() {
                 </td>
                 <td className="py-2">
                   {b.fileSaifiEvaluated?.toFixed(2) ?? "-"} / {b.fileSaidiEvaluated?.toFixed(1) ?? "-"}
+                </td>
+                <td className="py-2">
+                  {editingTotalCustomersId === b.id ? (
+                    <span className="inline-flex items-center gap-1">
+                      <input
+                        type="number"
+                        value={totalCustomersInput}
+                        onChange={(e) => setTotalCustomersInput(e.target.value)}
+                        className="w-24 rounded border px-2 py-1 text-sm"
+                        autoFocus
+                      />
+                      <button
+                        onClick={() => saveTotalCustomers(b.id)}
+                        disabled={savingTotalCustomers}
+                        className="text-green-700 underline"
+                      >
+                        บันทึก
+                      </button>
+                      <button onClick={() => setEditingTotalCustomersId(null)} className="text-slate-500 underline">
+                        ยกเลิก
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-2">
+                      {b.totalCustomers ? b.totalCustomers.toLocaleString() : <span className="text-amber-600">ยังไม่ระบุ</span>}
+                      <button onClick={() => startEditTotalCustomers(b)} className="text-blue-600 underline">
+                        แก้ไข
+                      </button>
+                    </span>
+                  )}
                 </td>
                 <td className="py-2">
                   {b.anomalyCount > 0 ? (
