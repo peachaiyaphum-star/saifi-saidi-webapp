@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiClient } from "../api/client";
+import { useAuth } from "../context/AuthContext";
 import { StatCard } from "../components/StatCard";
 import { TrendChart, type TrendPoint } from "../components/charts/TrendChart";
 import { CauseBreakdown, type CausePoint } from "../components/charts/CauseBreakdown";
@@ -23,6 +24,7 @@ interface Summary {
 }
 
 export function Dashboard() {
+  const { user } = useAuth();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [trend, setTrend] = useState<TrendPoint[]>([]);
   const [cumulativeTrend, setCumulativeTrend] = useState<CumulativePoint[]>([]);
@@ -32,30 +34,38 @@ export function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [s, t, ct, c, a, w] = await Promise.all([
-          apiClient.get("/dashboard/summary"),
-          apiClient.get("/dashboard/trend"),
-          apiClient.get("/dashboard/cumulative-trend"),
-          apiClient.get("/dashboard/causes"),
-          apiClient.get("/dashboard/areas"),
-          apiClient.get("/dashboard/worst-feeders"),
-        ]);
-        setSummary(s.data);
-        setTrend(t.data);
-        setCumulativeTrend(ct.data);
-        setCauses(c.data);
-        setAreas(a.data);
-        setWorstFeeders(w.data);
-      } catch (err: any) {
-        setError(err.response?.data?.error ?? "ยังไม่มีข้อมูลสำหรับแสดงผล กรุณาอัปโหลดรายงาน 50 ก่อน");
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const loadAll = useCallback(async () => {
+    try {
+      const [s, t, ct, c, a, w] = await Promise.all([
+        apiClient.get("/dashboard/summary"),
+        apiClient.get("/dashboard/trend"),
+        apiClient.get("/dashboard/cumulative-trend"),
+        apiClient.get("/dashboard/causes"),
+        apiClient.get("/dashboard/areas"),
+        apiClient.get("/dashboard/worst-feeders"),
+      ]);
+      setSummary(s.data);
+      setTrend(t.data);
+      setCumulativeTrend(ct.data);
+      setCauses(c.data);
+      setAreas(a.data);
+      setWorstFeeders(w.data);
+    } catch (err: any) {
+      setError(err.response?.data?.error ?? "ยังไม่มีข้อมูลสำหรับแสดงผล กรุณาอัปโหลดรายงาน 50 ก่อน");
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadAll();
+  }, [loadAll]);
+
+  async function saveTotalCustomers(newValue: number) {
+    if (!summary) return;
+    await apiClient.patch(`/uploads/${summary.batchId}/total-customers`, { totalCustomers: newValue });
+    await loadAll();
+  }
 
   if (loading) return <div className="text-slate-500">กำลังโหลดข้อมูล...</div>;
 
@@ -98,7 +108,12 @@ export function Dashboard() {
           status={summary.target ? (summary.saidiWithinTarget ? "ok" : "warn") : "neutral"}
         />
         <StatCard label="จำนวนเหตุการณ์ที่ประเมิน" value={summary.eventCount.toLocaleString()} />
-        <StatCard label="ผู้ใช้ไฟทั้งหมด" value={summary.totalCustomers.toLocaleString()} />
+        <StatCard
+          label="ผู้ใช้ไฟทั้งหมด"
+          value={summary.totalCustomers.toLocaleString()}
+          editable={user?.role === "ADMIN" || user?.role === "ENGINEER"}
+          onSave={saveTotalCustomers}
+        />
       </div>
 
       <div className="rounded-lg border bg-white p-6 shadow-sm">
