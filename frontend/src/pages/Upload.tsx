@@ -4,6 +4,7 @@ import { apiClient } from "../api/client";
 interface BatchSummary {
   id: string;
   fileName: string;
+  sourceType: "REPORT_50" | "REPORT_52";
   uploadedAt: string;
   status: "PENDING_REVIEW" | "APPROVED" | "REJECTED";
   anomalyCount: number;
@@ -34,6 +35,9 @@ export function Upload() {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [file52, setFile52] = useState<File | null>(null);
+  const [uploading52, setUploading52] = useState(false);
+  const [error52, setError52] = useState<string | null>(null);
   const [batches, setBatches] = useState<BatchSummary[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<string | null>(null);
   const [anomalies, setAnomalies] = useState<AnomalyEvent[]>([]);
@@ -66,6 +70,25 @@ export function Upload() {
       setError(err.response?.data?.error ?? "อัปโหลดไม่สำเร็จ");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleUpload52() {
+    if (!file52) return;
+    setUploading52(true);
+    setError52(null);
+    const form = new FormData();
+    form.append("file", file52);
+    try {
+      await apiClient.post("/uploads/report52", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setFile52(null);
+      await loadBatches();
+    } catch (err: any) {
+      setError52(err.response?.data?.error ?? "อัปโหลดไม่สำเร็จ");
+    } finally {
+      setUploading52(false);
     }
   }
 
@@ -121,11 +144,35 @@ export function Upload() {
       </div>
 
       <div className="rounded-lg border bg-white p-6 shadow-sm">
+        <h1 className="mb-1 text-lg font-semibold text-slate-800">อัปโหลดรายงาน 52</h1>
+        <p className="mb-4 text-sm text-slate-500">
+          ข้อมูลเหตุการณ์ละเอียดกว่ารายงาน 50 (แยกตามพื้นที่ที่กระทบจริง) แนะนำให้อัปโหลดทุกเดือนเพื่อความแม่นยำ
+        </p>
+        <div className="flex items-center gap-3">
+          <input
+            type="file"
+            accept=".xlsx"
+            onChange={(e) => setFile52(e.target.files?.[0] ?? null)}
+            className="text-sm"
+          />
+          <button
+            onClick={handleUpload52}
+            disabled={!file52 || uploading52}
+            className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {uploading52 ? "กำลังประมวลผล..." : "อัปโหลด"}
+          </button>
+        </div>
+        {error52 && <div className="mt-3 rounded bg-red-50 px-3 py-2 text-sm text-red-600">{error52}</div>}
+      </div>
+
+      <div className="rounded-lg border bg-white p-6 shadow-sm">
         <h2 className="mb-4 text-lg font-semibold text-slate-800">ประวัติการอัปโหลด</h2>
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b text-slate-500">
               <th className="pb-2">ไฟล์</th>
+              <th className="pb-2">ประเภท</th>
               <th className="pb-2">ผู้อัปโหลด</th>
               <th className="pb-2">สถานะ</th>
               <th className="pb-2">SAIFI / SAIDI (ในไฟล์)</th>
@@ -138,6 +185,15 @@ export function Upload() {
             {batches.map((b) => (
               <tr key={b.id} className="border-b last:border-0">
                 <td className="py-2">{b.fileName}</td>
+                <td className="py-2">
+                  <span
+                    className={`rounded px-2 py-1 text-xs font-medium ${
+                      b.sourceType === "REPORT_52" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"
+                    }`}
+                  >
+                    {b.sourceType === "REPORT_52" ? "รายงาน 52" : "รายงาน 50"}
+                  </span>
+                </td>
                 <td className="py-2">{b.uploadedBy?.name}</td>
                 <td className="py-2">
                   <span

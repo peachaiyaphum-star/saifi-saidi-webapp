@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { parseReport50 } from "../services/parser.service.js";
+import { parseReport52 } from "../services/report52.parser.service.js";
 import { detectAnomalies } from "../services/anomaly.service.js";
 import { computeEvaluated, EVALUATED_TRUE_FILTER, EVALUATED_FALSE_FILTER } from "../services/evaluation.service.js";
 import { Prisma, Role } from "@prisma/client";
@@ -21,6 +22,47 @@ const upload = multer({
 // recovers the real filename.
 function fixMultipartFilename(name: string): string {
   return Buffer.from(name, "latin1").toString("utf8");
+}
+
+// Some file formats (the raw HTML รายงาน 50 export, and รายงาน 52 entirely)
+// don't carry a total-customer count at all. Carry forward the most recent
+// batch's total as a stand-in - it moves slowly - rather than leaving
+// SAIFI/SAIDI undivided (null).
+async function resolveTotalCustomers(
+  fileValue: number | undefined
+): Promise<{ totalCustomers: number | undefined; totalCustomersSource: "file" | "carried_forward" | "none" }> {
+  if (fileValue) return { totalCustomers: fileValue, totalCustomersSource: "file" };
+
+  const lastBatch = await prisma.uploadBatch.findFirst({
+    where: { totalCustomers: { not: null } },
+    orderBy: { uploadedAt: "desc" },
+  });
+  if (lastBatch?.totalCustomers) {
+    return { totalCustomers: lastBatch.totalCustomers, totalCustomersSource: "carried_forward" };
+  }
+  return { totalCustomers: undefined, totalCustomersSource: "none" };
+}
+
+// A file can carry several thousand events; inserting them all in one
+// createMany can take longer than Prisma's interactive-transaction default
+// (5s) over a pooled connection like Neon's - this is what originally blew
+// that timeout and crashed the whole server (unhandled rejection). Chunking
+// avoids relying on that timeout at all, and on failure the batch row (with
+// its cascade-deleted events, if any got inserted) is cleaned up explicitly.
+const INSERT_CHUNK_SIZE = 500;
+async function insertEventsChunked(
+  batchId: string,
+  eventRows: Omit<Prisma.OutageEventCreateManyInput, "uploadBatchId">[]
+): Promise<void> {
+  try {
+    const rowsWithBatchId = eventRows.map((row) => ({ ...row, uploadBatchId: batchId }));
+    for (let i = 0; i < rowsWithBatchId.length; i += INSERT_CHUNK_SIZE) {
+      await prisma.outageEvent.createMany({ data: rowsWithBatchId.slice(i, i + INSERT_CHUNK_SIZE) });
+    }
+  } catch (err) {
+    await prisma.uploadBatch.delete({ where: { id: batchId } });
+    throw err;
+  }
 }
 
 uploadRouter.post(
@@ -92,33 +134,14 @@ uploadRouter.post(
       };
     });
 
-    // Some file formats (the raw HTML export) don't carry a total-customer
-    // count at all, unlike the xlsx export's embedded ผชฟ.ทั้งหมด figure.
-    // Carry forward the most recent batch's total as a stand-in - it moves
-    // slowly - rather than leaving SAIFI/SAIDI undivided (null).
-    let totalCustomers = parsed.evaluatedSummary?.totalCustomers ?? parsed.notEvaluatedSummary?.totalCustomers;
-    let totalCustomersSource: "file" | "carried_forward" | "none" = totalCustomers ? "file" : "none";
-    if (!totalCustomers) {
-      const lastBatch = await prisma.uploadBatch.findFirst({
-        where: { totalCustomers: { not: null } },
-        orderBy: { uploadedAt: "desc" },
-      });
-      if (lastBatch?.totalCustomers) {
-        totalCustomers = lastBatch.totalCustomers;
-        totalCustomersSource = "carried_forward";
-      }
-    }
+    const { totalCustomers, totalCustomersSource } = await resolveTotalCustomers(
+      parsed.evaluatedSummary?.totalCustomers ?? parsed.notEvaluatedSummary?.totalCustomers
+    );
 
-    // A file can carry several thousand events; inserting them all can take
-    // longer than Prisma's interactive-transaction default (5s) over a
-    // pooled connection like Neon's, and that default is tight enough to
-    // matter here. Rather than tune that timeout, this isn't wrapped in an
-    // interactive transaction at all - createMany is already a single atomic
-    // statement, and on failure the batch row (with its cascade-deleted
-    // events, if any got inserted) is cleaned up explicitly below.
     const batch = await prisma.uploadBatch.create({
       data: {
         fileName: fixMultipartFilename(req.file!.originalname),
+        sourceType: "REPORT_50",
         uploadedById: req.user!.id,
         region: parsed.meta.region,
         officesText: parsed.meta.officesText,
@@ -133,20 +156,7 @@ uploadRouter.post(
       },
     });
 
-    // Chunked rather than one createMany for the whole file: a single
-    // multi-thousand-row INSERT is slower and more failure-prone over a
-    // pooled connection than several smaller ones (this is what produced the
-    // multi-second query that originally blew Prisma's transaction timeout).
-    const CHUNK_SIZE = 500;
-    try {
-      const rowsWithBatchId = eventRows.map((row) => ({ ...row, uploadBatchId: batch.id }));
-      for (let i = 0; i < rowsWithBatchId.length; i += CHUNK_SIZE) {
-        await prisma.outageEvent.createMany({ data: rowsWithBatchId.slice(i, i + CHUNK_SIZE) });
-      }
-    } catch (err) {
-      await prisma.uploadBatch.delete({ where: { id: batch.id } });
-      throw err;
-    }
+    await insertEventsChunked(batch.id, eventRows);
 
     res.status(201).json({
       batchId: batch.id,
@@ -155,6 +165,87 @@ uploadRouter.post(
       meta: parsed.meta,
       evaluatedSummary: parsed.evaluatedSummary,
       notEvaluatedSummary: parsed.notEvaluatedSummary,
+      totalCustomersSource,
+    });
+  })
+);
+
+// รายงาน 52: a different export (event-impact list, one row per event x
+// affected site) from PEA's BI tooling rather than the web reporting system.
+// Feeds the same OutageEvent/UploadBatch tables as รายงาน 50 - the dashboard,
+// Analyze page, and forecast all work against whichever batch was approved
+// most recently regardless of source, which is exactly the "รายงาน 52 every
+// month, รายงาน 50 whenever" workflow this was built for.
+uploadRouter.post(
+  "/report52",
+  requireAuth,
+  requireRole(Role.ADMIN, Role.ENGINEER),
+  upload.single("file"),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: "กรุณาแนบไฟล์ 'รายงาน 52' (.xlsx)" });
+    }
+
+    let parsed;
+    try {
+      parsed = parseReport52(req.file.buffer);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "ไม่สามารถอ่านไฟล์ได้";
+      return res.status(422).json({ error: message });
+    }
+
+    let anomalyCount = 0;
+    const eventRows = parsed.rows.map((row) => {
+      const flags = detectAnomalies(row, row.evaluated, null);
+      if (flags.length > 0) anomalyCount += 1;
+
+      return {
+        eventNo: row.eventNo,
+        outageAt: row.outageAt,
+        restoreFirstAt: row.restoreFirstAt,
+        restoreFullAt: row.restoreFullAt,
+        durationMinutes: row.durationMinutes,
+        equipmentCode: row.equipmentCode,
+        feederCode: row.feederCode,
+        status: row.status,
+        phase: row.phase,
+        subCause: row.subCause,
+        causeKnown: row.causeKnown,
+        officeName: row.officeName,
+        weather: row.weather,
+        customersAffected: row.customersAffected,
+        location: row.location,
+        repairDetail: row.repairDetail,
+        loadMw: row.loadMw,
+        eventType: row.eventType,
+        customerMinutes: row.customerMinutes,
+        evaluated: row.evaluated,
+        anomalyFlags: flags.length > 0 ? flags : Prisma.JsonNull,
+      };
+    });
+
+    const { totalCustomers, totalCustomersSource } = await resolveTotalCustomers(undefined);
+
+    const batch = await prisma.uploadBatch.create({
+      data: {
+        fileName: fixMultipartFilename(req.file!.originalname),
+        sourceType: "REPORT_52",
+        uploadedById: req.user!.id,
+        periodStart: parsed.periodStart,
+        periodEnd: parsed.periodEnd,
+        totalCustomers,
+        anomalyCount,
+      },
+    });
+
+    await insertEventsChunked(batch.id, eventRows);
+
+    res.status(201).json({
+      batchId: batch.id,
+      eventsImported: eventRows.length,
+      anomalyCount,
+      periodStart: parsed.periodStart,
+      periodEnd: parsed.periodEnd,
       totalCustomersSource,
     });
   })

@@ -43,7 +43,7 @@ const INCLUDED_OFFICES = new Set([
   "กฟอ.แก้งคร้อ",
 ]);
 
-const EXCLUDED_SUB_CAUSES = new Set([
+export const EXCLUDED_SUB_CAUSES = new Set([
   // เหตุสุดวิสัย
   "สงคราม/จลาจล",
   "สุดวิสัยเกินกว่าเกณฑ์/มาตรฐานที่ กฟภ. กำหนด",
@@ -69,12 +69,36 @@ const EXCLUDED_SUB_CAUSES = new Set([
 // The report data itself is inconsistent here: the base code keeps its
 // slash ("T/R") but the numbered variants drop it ("TR1", "TR2") - verified
 // against real report data, not just the requested "T/R, T/R1, T/R2".
-const EXCLUDED_STATUSES = new Set(["T/R", "TR1", "TR2"]);
+export const EXCLUDED_STATUSES = new Set(["T/R", "TR1", "TR2"]);
 
 export function computeEvaluated(event: ParsedEventRow): boolean {
   if (event.eventType !== INCLUDED_EVENT_TYPE) return false;
   if (!event.officeName || !INCLUDED_OFFICES.has(event.officeName)) return false;
   if (event.subCause && EXCLUDED_SUB_CAUSES.has(event.subCause)) return false;
   if (event.status && EXCLUDED_STATUSES.has(event.status)) return false;
+  return true;
+}
+
+/**
+ * SAIFI/SAIDI counting rule for "รายงาน 52" rows (one row per event x
+ * affected site, from a different source system than รายงาน 50). It reuses
+ * the exact same excluded sub-cause and status sets - verified against real
+ * data that รายงาน 52 uses the identical cause taxonomy and status codes -
+ * but the area-scope check differs: รายงาน 52 rows carry an AffectedAreaID
+ * that's uniformly "NE3_P" across every in-scope row, so that's used
+ * directly instead of matching against a name whitelist (avoiding a repeat
+ * of the "กฟย.อ." vs "กฟอ." spelling mismatch already hit once with
+ * รายงาน 50's office names).
+ */
+const REPORT52_INCLUDED_AREA_ID = "NE3_P";
+
+export function computeEvaluatedReport52(row: {
+  subCause?: string;
+  status?: string;
+  affectedAreaId?: string;
+}): boolean {
+  if (row.affectedAreaId !== REPORT52_INCLUDED_AREA_ID) return false;
+  if (row.subCause && EXCLUDED_SUB_CAUSES.has(row.subCause)) return false;
+  if (row.status && EXCLUDED_STATUSES.has(row.status)) return false;
   return true;
 }

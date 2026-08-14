@@ -19,6 +19,11 @@ enum BatchStatus {
   REJECTED
 }
 
+enum BatchSourceType {
+  REPORT_50 // event list, single row per event, ad-hoc cadence
+  REPORT_52 // event-impact export, one row per (event, affected site), monthly cadence
+}
+
 enum TargetCategory {
   GENERAL              // ทั่วไป
   INDUSTRIAL_ESTATE     // นิคมอุตสาหกรรม
@@ -58,11 +63,12 @@ model Feeder {
 }
 
 model UploadBatch {
-  id             String      @id @default(cuid())
+  id             String           @id @default(cuid())
   fileName       String
+  sourceType     BatchSourceType  @default(REPORT_50)
   uploadedById   String
-  uploadedBy     User        @relation("UploadedBy", fields: [uploadedById], references: [id])
-  uploadedAt     DateTime    @default(now())
+  uploadedBy     User             @relation("UploadedBy", fields: [uploadedById], references: [id])
+  uploadedAt     DateTime         @default(now())
 
   // metadata parsed from the report header block
   region         String?

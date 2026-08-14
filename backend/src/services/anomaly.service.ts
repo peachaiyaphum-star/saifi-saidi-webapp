@@ -1,4 +1,5 @@
 import type { ParsedEventRow } from "./parser.service.js";
+import { EXCLUDED_STATUSES } from "./evaluation.service.js";
 
 export type AnomalyCode =
   | "SHEET_RULE_MISMATCH" // file's own ประเมิน/ไม่ประเมิน classification disagrees with the computed rule
@@ -22,7 +23,13 @@ export function detectAnomalies(
     flags.push("RESTORE_BEFORE_OUTAGE");
   }
 
-  if (event.durationMinutes !== undefined && event.durationMinutes <= 0) {
+  // Zero duration is normal for T/R, TR1, TR2 - those are automatic
+  // protection operations that clear within a second by design (verified
+  // against real รายงาน 52 data: 3190 of 3250 zero-duration rows were
+  // exactly these statuses). Flagging them just buried the ~60 zero-duration
+  // rows on statuses like Operate/D/F that are worth a human looking at.
+  const isTransientStatus = event.status !== undefined && EXCLUDED_STATUSES.has(event.status);
+  if (event.durationMinutes !== undefined && event.durationMinutes <= 0 && !isTransientStatus) {
     flags.push("NEGATIVE_OR_ZERO_DURATION");
   }
 

@@ -10,6 +10,20 @@ import { EVALUATED_TRUE_FILTER as EVALUATED_TRUE } from "./evaluation.service.js
  * month/office/feeder/cause to build the trend and breakdown views.
  */
 
+// รายงาน 50 batches are inherently single-year (YTD from Jan 1 of the report
+// year), but รายงาน 52 can carry many years of history in one file - so every
+// query here scopes events to a single target year (derived from the batch's
+// periodEnd, same as the Target lookup already did) rather than summing the
+// whole batch. This is a no-op for รายงาน 50 (already one year) and load-
+// bearing for รายงาน 52.
+function yearOf(batch: { periodEnd: Date | null }): number {
+  return batch.periodEnd ? batch.periodEnd.getUTCFullYear() : new Date().getUTCFullYear();
+}
+
+function yearRangeFilter(year: number) {
+  return { gte: new Date(Date.UTC(year, 0, 1)), lt: new Date(Date.UTC(year + 1, 0, 1)) };
+}
+
 async function resolveBatch(batchId?: string) {
   if (batchId) {
     const batch = await prisma.uploadBatch.findUnique({ where: { id: batchId } });
@@ -31,9 +45,10 @@ async function resolveBatch(batchId?: string) {
 export async function getExecutiveSummary(batchId?: string) {
   const batch = await resolveBatch(batchId);
   const totalCustomers = batch.totalCustomers ?? 0;
+  const year = yearOf(batch);
 
   const agg = await prisma.outageEvent.aggregate({
-    where: { uploadBatchId: batch.id, ...EVALUATED_TRUE },
+    where: { uploadBatchId: batch.id, outageAt: yearRangeFilter(year), ...EVALUATED_TRUE },
     _sum: { customersAffected: true, customerMinutes: true },
     _count: true,
   });
@@ -43,7 +58,6 @@ export async function getExecutiveSummary(batchId?: string) {
 
   const saifi = totalCustomers > 0 ? affected / totalCustomers : null;
   const saidi = totalCustomers > 0 ? customerMinutes / totalCustomers : null;
-  const year = batch.periodEnd ? batch.periodEnd.getFullYear() : new Date().getFullYear();
 
   const target = await prisma.target.findFirst({ where: { year, category: "GENERAL" } });
 
@@ -67,9 +81,10 @@ export async function getExecutiveSummary(batchId?: string) {
 export async function getMonthlyTrend(batchId?: string) {
   const batch = await resolveBatch(batchId);
   const totalCustomers = batch.totalCustomers ?? 0;
+  const year = yearOf(batch);
 
   const events = await prisma.outageEvent.findMany({
-    where: { uploadBatchId: batch.id, ...EVALUATED_TRUE },
+    where: { uploadBatchId: batch.id, outageAt: yearRangeFilter(year), ...EVALUATED_TRUE },
     select: { outageAt: true, customersAffected: true, customerMinutes: true },
   });
 
@@ -98,7 +113,7 @@ export async function getCauseBreakdown(batchId?: string) {
 
   const grouped = await prisma.outageEvent.groupBy({
     by: ["subCause"],
-    where: { uploadBatchId: batch.id, ...EVALUATED_TRUE },
+    where: { uploadBatchId: batch.id, outageAt: yearRangeFilter(yearOf(batch)), ...EVALUATED_TRUE },
     _sum: { customerMinutes: true, customersAffected: true },
     _count: true,
   });
@@ -118,7 +133,7 @@ export async function getAreaBreakdown(batchId?: string) {
 
   const grouped = await prisma.outageEvent.groupBy({
     by: ["officeName"],
-    where: { uploadBatchId: batch.id, ...EVALUATED_TRUE },
+    where: { uploadBatchId: batch.id, outageAt: yearRangeFilter(yearOf(batch)), ...EVALUATED_TRUE },
     _sum: { customerMinutes: true, customersAffected: true },
     _count: true,
   });
@@ -147,11 +162,11 @@ function dayOffset(year: number, date: Date): number {
 export async function getCumulativeTrend(batchId?: string, category: TargetCategory = "GENERAL" as TargetCategory) {
   const batch = await resolveBatch(batchId);
   const totalCustomers = batch.totalCustomers ?? 0;
-  const year = batch.periodEnd ? batch.periodEnd.getUTCFullYear() : new Date().getUTCFullYear();
+  const year = yearOf(batch);
   const lastActualMonth = batch.periodEnd ? batch.periodEnd.getUTCMonth() + 1 : 12;
 
   const events = await prisma.outageEvent.findMany({
-    where: { uploadBatchId: batch.id, ...EVALUATED_TRUE },
+    where: { uploadBatchId: batch.id, outageAt: yearRangeFilter(year), ...EVALUATED_TRUE },
     select: { outageAt: true, customersAffected: true, customerMinutes: true },
   });
 
@@ -237,10 +252,10 @@ export async function getForecast(targetDateStr: string, batchId?: string, categ
   if (Number.isNaN(targetDate.getTime())) throw new Error("รูปแบบวันที่ไม่ถูกต้อง");
 
   const totalCustomers = batch.totalCustomers ?? 0;
-  const year = batch.periodEnd.getUTCFullYear();
+  const year = yearOf(batch);
 
   const agg = await prisma.outageEvent.aggregate({
-    where: { uploadBatchId: batch.id, ...EVALUATED_TRUE },
+    where: { uploadBatchId: batch.id, outageAt: yearRangeFilter(year), ...EVALUATED_TRUE },
     _sum: { customersAffected: true, customerMinutes: true },
   });
   const actualSaifiAsOf = totalCustomers > 0 ? (agg._sum.customersAffected ?? 0) / totalCustomers : 0;
@@ -278,7 +293,12 @@ export async function getWorstFeeders(batchId?: string, limit = 10) {
 
   const grouped = await prisma.outageEvent.groupBy({
     by: ["feederCode"],
-    where: { uploadBatchId: batch.id, feederCode: { not: null }, ...EVALUATED_TRUE },
+    where: {
+      uploadBatchId: batch.id,
+      feederCode: { not: null },
+      outageAt: yearRangeFilter(yearOf(batch)),
+      ...EVALUATED_TRUE,
+    },
     _sum: { customerMinutes: true, customersAffected: true },
     _count: true,
   });

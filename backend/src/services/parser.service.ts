@@ -76,7 +76,7 @@ function beToCe(year: number): number {
 // arithmetic - no Date object is ever constructed from calendar components
 // until the very end, once via Date.UTC, so the result is immune to the
 // server's timezone entirely.
-function excelSerialToParts(serial: number) {
+export function excelSerialToParts(serial: number) {
   const utcDays = Math.floor(serial - 25569); // 25569 = days between 1899-12-30 and 1970-01-01
   const dateInfo = new Date(utcDays * 86400 * 1000);
   const fractionalDay = serial - Math.floor(serial) + 0.0000001;
@@ -145,7 +145,7 @@ function combineThaiDateAndTimeStrings(dateStr: string, timeStr: string): Date |
   return combined;
 }
 
-function cellToNumber(value: unknown): number | undefined {
+export function cellToNumber(value: unknown): number | undefined {
   if (value === null || value === undefined || value === "") return undefined;
   // The HTML-export format renders numbers >= 1000 with thousands
   // separators (e.g. "1,296"), which Number() would otherwise reject as NaN.
@@ -154,7 +154,7 @@ function cellToNumber(value: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-function cellToString(value: unknown): string | undefined {
+export function cellToString(value: unknown): string | undefined {
   if (value === null || value === undefined) return undefined;
   const s = String(value).trim();
   return s === "" ? undefined : s;
